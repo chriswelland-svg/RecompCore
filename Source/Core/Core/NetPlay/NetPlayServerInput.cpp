@@ -156,14 +156,28 @@ void NetPlayServer::UpdateAdaptiveBuffer()
   }
 
   const u32 relay_ms = (links[0] + links[1] + 1) / 2;
-  m_adaptive_recommended_buffer_size =
-      std::clamp(static_cast<unsigned int>((relay_ms * 60 + 999) / 1000 + 1), 2u, 20u);
+  // ModernGekko: the buffer counts pad reads, not frames. GameCube games read
+  // the pads twice per frame (Beach Spikers: 120 reads/s), so size it for
+  // that, with two reads of margin for frame-time jitter.
+  const u32 reads_per_second = m_gamecube_controllers ? 120 : 60;
+  const unsigned int margin = m_gamecube_controllers ? 2 : 1;
+  const unsigned int minimum = m_gamecube_controllers ? 4 : 2;
+  m_adaptive_recommended_buffer_size = std::clamp(
+      static_cast<unsigned int>((relay_ms * reads_per_second + 999) / 1000 + margin), minimum,
+      20u);
 
+  // A player who keeps waiting asked for more (PadBufferRequest). Keep that
+  // while the requests keep coming, and give it back one step at a time once
+  // they stop, instead of dropping it all at once and stalling again.
   unsigned int desired = m_adaptive_recommended_buffer_size;
-  if (now < m_adaptive_buffer_boost_until)
-    desired = std::max(desired, m_adaptive_boost_buffer_size);
-  else
-    m_adaptive_boost_buffer_size = 0;
+  if (m_adaptive_boost_buffer_size > 0 && now >= m_adaptive_buffer_boost_until)
+  {
+    --m_adaptive_boost_buffer_size;
+    m_adaptive_buffer_boost_until = now + std::chrono::seconds(15);
+    if (m_adaptive_boost_buffer_size <= m_adaptive_recommended_buffer_size)
+      m_adaptive_boost_buffer_size = 0;
+  }
+  desired = std::max(desired, m_adaptive_boost_buffer_size);
 
   if (m_target_buffer_size < desired)
   {

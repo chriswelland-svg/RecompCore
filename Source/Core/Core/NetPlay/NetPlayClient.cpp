@@ -81,6 +81,7 @@ static std::mutex crit_netplay_client;
 static NetPlayClient* netplay_client = nullptr;
 static bool s_si_poll_batching = false;
 static std::string s_compatibility_fingerprint;
+static std::atomic<u32> s_gameplay_options{0};
 
 // called from ---GUI--- thread
 NetPlayClient::~NetPlayClient()
@@ -664,8 +665,11 @@ void NetPlayClient::OnChunkedDataAbort(sf::Packet& packet)
 
 void NetPlayClient::OnPadMapping(sf::Packet& packet)
 {
-  for (PlayerId& mapping : m_pad_map)
-    packet >> mapping;
+  {
+    std::lock_guard lkg(m_crit.game);
+    for (PlayerId& mapping : m_pad_map)
+      packet >> mapping;
+  }
 
   UpdateDevices();
 
@@ -1003,6 +1007,8 @@ void NetPlayClient::OnStartGame(sf::Packet& packet)
     for (size_t i = 0; i < sizeof(m_net_settings.sram); ++i)
       packet >> m_net_settings.sram[i];
 
+    packet >> m_net_settings.gameplay_options;
+
     u32 sentinel = 0;
     packet >> sentinel;
     if (!packet || sentinel != MODERNGEKKO_START_GAME_SENTINEL)
@@ -1244,6 +1250,12 @@ PadMappingArray NetPlayClient::GetWiimoteMappingSnapshot()
 {
   std::lock_guard lkg(m_crit.game);
   return m_wiimote_map;
+}
+
+PadMappingArray NetPlayClient::GetPadMappingSnapshot()
+{
+  std::lock_guard lkg(m_crit.game);
+  return m_pad_map;
 }
 
 const NetSettings& NetPlayClient::GetNetSettings() const
@@ -1925,6 +1937,16 @@ void SetCompatibilityFingerprint(std::string fingerprint)
 const std::string& GetCompatibilityFingerprint()
 {
   return s_compatibility_fingerprint;
+}
+
+void SetGameplayOptions(u32 options)
+{
+  s_gameplay_options = options;
+}
+
+u32 GetGameplayOptions()
+{
+  return s_gameplay_options;
 }
 }  // namespace NetPlay
 

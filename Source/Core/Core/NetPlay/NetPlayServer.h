@@ -72,6 +72,15 @@ public:
   u16 GetPort() const;
   bool CanStart();
 
+  // ModernGekko: GameCube games take their players on the four controller
+  // ports, Wii games on the four Wii Remote slots. Call before anyone joins.
+  void SetGameCubeControllers(bool gamecube);
+  // Host-side seating: MAPPING must give every player exactly as many slots
+  // as they hold now (a rearrangement, e.g. to change or shuffle teams).
+  // Returns false while a game is starting or running, or for a bad mapping.
+  bool ArrangeControllers(const PadMappingArray& mapping);
+  PadMappingArray GetControllerMapping();
+
   std::unordered_set<std::string> GetInterfaceSet() const;
   std::string GetInterfaceHost(const std::string& inter) const;
 
@@ -160,6 +169,8 @@ private:
   void SetupIndex();
   bool PlayerHasControllerMapped(PlayerId pid) const;
   void SetControllerCount(Client& player, u8 requested_count);
+  PadMappingArray& ControllerMap();
+  void SendControllerMappingAsync();
   void SetReady(Client& player, bool ready);
   void SendPlayerState(const Client& player, PlayerId target_pid = 0);
 
@@ -170,6 +181,7 @@ private:
   PlayerId GiveFirstAvailableIDTo(ENetPeer* player);
 
   NetSettings m_settings;
+  bool m_gamecube_controllers = false;
 
   bool m_is_running = false;
   bool m_do_loop = false;

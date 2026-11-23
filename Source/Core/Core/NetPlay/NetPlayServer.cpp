@@ -482,7 +482,7 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
     return ConnectionError::CompatibilityMismatch;
 
   const std::size_t occupied_controllers =
-      std::ranges::count_if(m_wiimote_map, [](PlayerId pid) { return pid != 0; });
+      std::ranges::count_if(ControllerMap(), [](PlayerId pid) { return pid != 0; });
   const std::size_t available_controllers = 4 - occupied_controllers;
   if (requested_controllers == 0 || requested_controllers > 4 || available_controllers == 0)
     return ConnectionError::RoomFull;
@@ -501,7 +501,7 @@ ConnectionError NetPlayServer::OnConnect(ENetPeer* incoming_connection, sf::Pack
   // force a ping on first netplay loop
   m_update_pings = true;
 
-  for (PlayerId& mapping : m_wiimote_map)
+  for (PlayerId& mapping : ControllerMap())
   {
     if (mapping == 0 && requested_controllers > 0)
     {
@@ -678,17 +678,17 @@ void NetPlayServer::SetControllerCount(Client& player, u8 requested_count)
     return;
 
   std::lock_guard lkp(m_crit.players);
-  for (PlayerId& mapping : m_wiimote_map)
+  for (PlayerId& mapping : ControllerMap())
   {
     if (mapping == player.pid)
       mapping = 0;
   }
 
   const u8 available =
-      static_cast<u8>(std::ranges::count_if(m_wiimote_map, [](PlayerId pid) { return pid == 0; }));
+      static_cast<u8>(std::ranges::count_if(ControllerMap(), [](PlayerId pid) { return pid == 0; }));
   const u8 assigned = std::min<u8>({requested_count, available, 4});
   u8 remaining = assigned;
-  for (PlayerId& mapping : m_wiimote_map)
+  for (PlayerId& mapping : ControllerMap())
   {
     if (mapping == 0 && remaining > 0)
     {
@@ -699,6 +699,7 @@ void NetPlayServer::SetControllerCount(Client& player, u8 requested_count)
 
   player.controller_count = assigned;
   player.ready = false;
+  UpdatePadMapping();
   UpdateWiimoteMapping();
   SendPlayerState(player);
 }
@@ -717,12 +718,62 @@ bool NetPlayServer::CanStart()
 {
   std::lock_guard lkp(m_crit.players);
   const std::size_t occupied =
-      std::ranges::count_if(m_wiimote_map, [](PlayerId pid) { return pid != 0; });
+      std::ranges::count_if(ControllerMap(), [](PlayerId pid) { return pid != 0; });
   return occupied >= 2 && !m_players.empty() &&
          std::ranges::all_of(m_players, [](const auto& entry) {
            return entry.second.ready && entry.second.controller_count > 0 &&
                   entry.second.game_status == SyncIdentifierComparison::SameGame;
          });
+}
+
+PadMappingArray& NetPlayServer::ControllerMap()
+{
+  return m_gamecube_controllers ? m_pad_map : m_wiimote_map;
+}
+
+void NetPlayServer::SetGameCubeControllers(bool gamecube)
+{
+  std::lock_guard lkp(m_crit.players);
+  m_gamecube_controllers = gamecube;
+}
+
+PadMappingArray NetPlayServer::GetControllerMapping()
+{
+  std::lock_guard lkp(m_crit.players);
+  return ControllerMap();
+}
+
+// called from ---GUI--- thread
+bool NetPlayServer::ArrangeControllers(const PadMappingArray& mapping)
+{
+  if (m_is_running || m_start_pending)
+    return false;
+  std::lock_guard lkp(m_crit.players);
+  // Same players, same number of slots each: only the seating changes.
+  for (const auto& [pid, player] : m_players)
+  {
+    if (std::ranges::count(mapping, pid) != player.controller_count)
+      return false;
+  }
+  if (std::ranges::any_of(mapping, [this](PlayerId pid) {
+        return pid != 0 && !m_players.contains(pid);
+      }))
+  {
+    return false;
+  }
+  ControllerMap() = mapping;
+  SendControllerMappingAsync();
+  return true;
+}
+
+// The GUI thread must not touch ENet directly: queue for the netplay thread.
+void NetPlayServer::SendControllerMappingAsync()
+{
+  sf::Packet spac;
+  spac << (m_gamecube_controllers ? MessageID::PadMapping : MessageID::WiimoteMapping);
+  for (PlayerId mapping : ControllerMap())
+    spac << mapping;
+  SendAsyncToClients(std::move(spac));
 }
 
 // called from ---GUI--- thread
@@ -878,12 +929,12 @@ unsigned int NetPlayServer::OnData(sf::Packet& packet, Client& player)
       return 1;
     if (m_adaptive_buffer && requested_size > m_target_buffer_size)
     {
-      const unsigned int ceiling = std::min(20u, m_adaptive_recommended_buffer_size + 2);
+      const unsigned int ceiling = std::min(20u, m_adaptive_recommended_buffer_size + 8);
       const unsigned int target = std::min<unsigned int>(requested_size, ceiling);
       if (target > m_target_buffer_size)
       {
-        m_adaptive_boost_buffer_size = target;
-        m_adaptive_buffer_boost_until = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+        m_adaptive_boost_buffer_size = std::max(m_adaptive_boost_buffer_size, target);
+        m_adaptive_buffer_boost_until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         AdjustPadBufferSize(target);
       }
     }
@@ -1531,6 +1582,7 @@ bool NetPlayServer::SetupNetSettings()
   settings.golf_mode = Config::Get(Config::NETPLAY_NETWORK_MODE) == "golf";
   settings.use_fma = DoAllPlayersHaveHardwareFMA();
   settings.hide_remote_gbas = Config::Get(Config::NETPLAY_HIDE_REMOTE_GBAS);
+  settings.gameplay_options = GetGameplayOptions();
 
   // Unload GameINI to restore things to normal
   Config::RemoveLayer(Config::LayerType::GlobalGame);
@@ -1748,6 +1800,7 @@ bool NetPlayServer::StartGame()
   for (size_t i = 0; i < sizeof(m_settings.sram); ++i)
     spac << m_settings.sram[i];
 
+  spac << m_settings.gameplay_options;
   spac << MODERNGEKKO_START_GAME_SENTINEL;
 
   SendAsyncToClients(std::move(spac));

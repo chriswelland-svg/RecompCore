@@ -132,6 +132,7 @@ public:
   std::vector<const Player*> GetPlayers();
   std::vector<Player> GetPlayersSnapshot();
   PadMappingArray GetWiimoteMappingSnapshot();
+  PadMappingArray GetPadMappingSnapshot();
   const NetSettings& GetNetSettings() const;
 
   // Called from the GUI thread.
@@ -284,6 +285,12 @@ private:
   bool AddLocalWiimoteToBuffer(int local_wiimote, const WiimoteEmu::SerializedWiimoteState& state,
                                sf::Packet& packet);
   void RecordInputWait(u64 wait_ns);
+  u64 m_wait_window_ns = 0;
+  std::chrono::steady_clock::time_point m_wait_window_start{};
+  u64 m_stats_polls = 0;
+  u64 m_stats_wait_ns = 0;
+  u64 m_stats_waits = 0;
+  std::chrono::steady_clock::time_point m_stats_since{};
   void ResetInputWaitTelemetry(bool active);
   void SetInputBufferTelemetry(u32 size);
 
@@ -393,4 +400,8 @@ bool NetPlay_GetWiimoteData(const std::span<NetPlayClient::WiimoteDataBatchEntry
 unsigned int NetPlay_GetLocalWiimoteForSlot(unsigned int slot);
 void SetCompatibilityFingerprint(std::string fingerprint);
 const std::string& GetCompatibilityFingerprint();
+// ModernGekko: the gameplay options a host sends with StartGame
+// (NetSettings::gameplay_options).
+void SetGameplayOptions(u32 options);
+u32 GetGameplayOptions();
 }  // namespace NetPlay

@@ -18,7 +18,10 @@ namespace NetPlay
 using namespace std::chrono_literals;
 // An arbitrary amount of time of no acknowledgement of sent packets before netplay decides a
 // connection is disconnected
-constexpr std::chrono::milliseconds PEER_TIMEOUT = 30s;
+// ModernGekko: 12 s, not 30. In a live match a player whose connection has
+// been silent that long is gone, and everybody else's game sits frozen until
+// the timeout notices; 12 s gets them back to the lobby three times sooner.
+constexpr std::chrono::milliseconds PEER_TIMEOUT = 12s;
 
 bool CompressFileIntoPacket(const std::string& file_path, sf::Packet& packet);
 bool CompressFolderIntoPacket(const std::string& folder_path, sf::Packet& packet);

@@ -17,6 +17,10 @@
 #include <atomic>
 #include <chrono>
 
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+
 namespace NetPlay
 {
 
@@ -97,6 +101,13 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
     }
   }
 
+  // ModernGekko: time the wait for remote input, like the Wii Remote path. A
+  // wait means the buffer is shorter than the connection: ask the host for one
+  // more frame (at most every 2 s), so a laggy link settles instead of
+  // stalling every frame. The adaptive buffer's ping estimate alone is not
+  // enough: games poll the pads more than once per frame.
+  bool waited = false;
+  std::chrono::steady_clock::time_point wait_start{};
   while (m_pad_buffer[pad_nb].Size() == 0)
   {
     if (!m_is_running.IsSet())
@@ -104,10 +115,82 @@ bool NetPlayClient::GetNetPads(const int pad_nb, const bool batching, GCPadStatu
       return false;
     }
 
+    if (!waited)
+    {
+      waited = true;
+      wait_start = std::chrono::steady_clock::now();
+    }
     m_gc_pad_event.Wait();
   }
 
   m_pad_buffer[pad_nb].Pop(*pad_status);
+
+  const auto now = std::chrono::steady_clock::now();
+  if (waited)
+  {
+    const u64 wait_ns = static_cast<u64>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now - wait_start).count());
+    RecordInputWait(wait_ns);
+    if (wait_ns >= 50000000)
+    {
+      // Names whose input was late: "my game stutters online" starts here.
+      std::string late = "port " + std::to_string(pad_nb + 1);
+      {
+        std::lock_guard lkp(m_crit.players);
+        if (const auto it = m_players.find(m_pad_map[pad_nb]); it != m_players.end())
+          late += " (" + it->second.name + ")";
+      }
+      std::fprintf(stderr, "netplay: waited %.0f ms for %s at frame %u\n",
+                   static_cast<double>(wait_ns) / 1e6, late.c_str(), m_timebase_frame);
+    }
+    // Many short waits hurt as much as one long one: judge the last 2 s.
+    if (now - m_wait_window_start >= std::chrono::seconds(2))
+    {
+      m_wait_window_start = now;
+      m_wait_window_ns = 0;
+    }
+    m_wait_window_ns += wait_ns;
+    const unsigned int current = m_target_buffer_size.load(std::memory_order_relaxed);
+    if (!m_host_input_authority && (wait_ns >= 8000000 || m_wait_window_ns >= 30000000) &&
+        current < 20 && now - m_last_buffer_request >= std::chrono::seconds(2))
+    {
+      m_wait_window_ns = 0;
+      sf::Packet request;
+      request << MessageID::PadBufferRequest << current + 1;
+      SendAsync(std::move(request));
+      m_last_buffer_request = now;
+    }
+  }
+  if (IsFirstInGamePad(pad_nb))
+  {
+    // One line every 10 s in the log: what a "the game feels slow online"
+    // report needs (poll rate, time spent waiting, buffer).
+    ++m_stats_polls;
+    if (m_stats_since.time_since_epoch().count() == 0)
+      m_stats_since = now;
+    static const int stats_seconds = [] {
+      const char* value = std::getenv("MODERNGEKKO_NETPLAY_STATS_SECONDS");
+      const int seconds = value ? std::atoi(value) : 10;
+      return seconds > 0 ? seconds : 10;
+    }();
+    if (now - m_stats_since >= std::chrono::seconds(stats_seconds))
+    {
+      const auto telemetry = GetInputWaitTelemetry();
+      const double seconds = std::chrono::duration<double>(now - m_stats_since).count();
+      std::fprintf(stderr,
+                   "netplay: input %.0f polls/s, waited %.0f ms/s (%llu waits, longest "
+                   "%.1f ms), buffer %u, desync-check frame %u\n",
+                   static_cast<double>(m_stats_polls) / seconds,
+                   static_cast<double>(telemetry.total_wait_ns - m_stats_wait_ns) / 1e6 / seconds,
+                   static_cast<unsigned long long>(telemetry.wait_count - m_stats_waits),
+                   static_cast<double>(telemetry.maximum_wait_ns) / 1e6,
+                   m_target_buffer_size.load(std::memory_order_relaxed), m_timebase_frame);
+      m_stats_polls = 0;
+      m_stats_since = now;
+      m_stats_wait_ns = telemetry.total_wait_ns;
+      m_stats_waits = telemetry.wait_count;
+    }
+  }
 
   auto& movie = Core::System::GetInstance().GetMovie();
   if (movie.IsRecordingInput())
@@ -212,6 +295,10 @@ void NetPlayClient::ResetInputWaitTelemetry(const bool active)
   s_input_wait_active.store(active, std::memory_order_release);
   if (active)
     m_last_buffer_request = {};
+  m_stats_polls = 0;
+  m_stats_wait_ns = 0;
+  m_stats_waits = 0;
+  m_stats_since = {};
 }
 
 void NetPlayClient::SetInputBufferTelemetry(const u32 size)

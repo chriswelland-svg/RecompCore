@@ -29,8 +29,8 @@ enum class CPUCore;
 
 namespace NetPlay
 {
-inline constexpr char MODERNGEKKO_NETPLAY_VERSION_SUFFIX[] = "|moderngekko-netplay-6";
-inline constexpr u32 MODERNGEKKO_START_GAME_SENTINEL = 0x4d475336;
+inline constexpr char MODERNGEKKO_NETPLAY_VERSION_SUFFIX[] = "|moderngekko-netplay-7";
+inline constexpr u32 MODERNGEKKO_START_GAME_SENTINEL = 0x4d475337;
 
 struct NetSettings
 {
@@ -111,6 +111,10 @@ struct NetSettings
   bool golf_mode = false;
   bool use_fma = false;
   bool hide_remote_gbas = false;
+  // ModernGekko: the host's gameplay options (bit flags owned by the
+  // frontend). Every machine applies the host's set, so the game runs the
+  // same code everywhere.
+  u32 gameplay_options = 0;
 
   Sram sram;
 
