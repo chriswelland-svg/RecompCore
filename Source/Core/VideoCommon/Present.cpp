@@ -15,6 +15,7 @@
 
 #include "Present.h"
 #include "VideoCommon/AbstractGfx.h"
+#include "VideoCommon/Fifo.h"
 #include "VideoCommon/FrameDumper.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/OnScreenUI.h"
@@ -24,6 +25,7 @@
 #include "VideoCommon/VideoEvents.h"
 #include "VideoCommon/Widescreen.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -1278,7 +1280,36 @@ bool Presenter::OverlayPresentReady() const
          m_backbuffer_format != AbstractTextureFormat::Undefined;
 }
 
+namespace
+{
+// An overlay frame handed to the paused GPU thread (see PresentOverlayFrame).
+std::atomic<bool> s_overlay_present_requested{false};
+}  // namespace
+
 void Presenter::PresentOverlayFrame()
+{
+  auto& system = Core::System::GetInstance();
+  if (g_backend_info.api_type == APIType::OpenGL && system.IsDualCoreMode())
+  {
+    s_overlay_present_requested.store(true, std::memory_order_release);
+    system.GetFifo().WakeGpuLoop();
+    return;
+  }
+  PresentOverlayFrameOnThisThread();
+}
+
+void Presenter::ServicePausedOverlayPresent()
+{
+  if (s_overlay_present_requested.exchange(false, std::memory_order_acq_rel))
+    PresentOverlayFrameOnThisThread();
+}
+
+void Presenter::DiscardPausedOverlayPresent()
+{
+  s_overlay_present_requested.store(false, std::memory_order_release);
+}
+
+void Presenter::PresentOverlayFrameOnThisThread()
 {
   std::lock_guard lock(s_forced_present_mutex);
   if (!g_presenter || !g_presenter->OverlayPresentReady())

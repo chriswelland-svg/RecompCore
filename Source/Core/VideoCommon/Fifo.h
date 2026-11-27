@@ -73,6 +73,10 @@ public:
   void GpuMaySleep();
   void RunGpuLoop();
   void ExitGpuLoop();
+  // Wakes the GPU thread's loop and nothing else, so it is safe from any thread
+  // (unlike RunGpu, which may schedule CoreTiming events). Used to hand the paused
+  // GPU thread an overlay present (Presenter::PresentOverlayFrame).
+  void WakeGpuLoop();
   void EmulatorState(bool running);
   void ResetVideoBuffer();
 

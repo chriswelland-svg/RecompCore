@@ -28,6 +28,7 @@
 #include "VideoCommon/DataReader.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/OpcodeDecoding.h"
+#include "VideoCommon/Present.h"
 #include "VideoCommon/VertexLoaderManager.h"
 #include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoBackendBase.h"
@@ -135,8 +136,18 @@ void FifoManager::ExitGpuLoop()
   m_gpu_mainloop.Stop(Common::BlockingLoop::StopMode::NonBlock);
 }
 
+void FifoManager::WakeGpuLoop()
+{
+  m_gpu_mainloop.Wakeup();
+}
+
 void FifoManager::EmulatorState(bool running)
 {
+  // A frame the settings menu handed over but this thread never got to is stale
+  // once emulation runs again (the menu has closed); drop it rather than present
+  // it at the next unrelated pause.
+  if (running)
+    VideoCommon::Presenter::DiscardPausedOverlayPresent();
   m_emu_running_state.Set(running);
   if (running)
     m_gpu_mainloop.Wakeup();
@@ -290,9 +301,14 @@ void FifoManager::RunGpuLoop()
         // Run events from the CPU thread.
         AsyncRequests::GetInstance()->PullEvents();
 
-        // Do nothing while paused
+        // Do nothing while paused -- except present the overlay frames the paused
+        // settings menu hands over. On OpenGL only this thread has the context, so
+        // they cannot be presented from the menu's own thread.
         if (!m_emu_running_state.IsSet())
+        {
+          VideoCommon::Presenter::ServicePausedOverlayPresent();
           return;
+        }
 
         if (m_use_deterministic_gpu_thread)
         {

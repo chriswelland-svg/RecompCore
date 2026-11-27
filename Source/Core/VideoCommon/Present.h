@@ -116,7 +116,22 @@ public:
   // Presents one overlay frame while emulation is paused (no ViSwap feeds
   // frames then): black XFB + OSD + the overlay hook's menu, paced by the
   // caller. Serializes against Presenter teardown via s_forced_present_mutex.
+  //
+  // On OpenGL in dual-core mode the frame is handed to the paused GPU thread
+  // instead of being presented on the caller's thread: a GL context is current
+  // on one thread only, and every GL call from the menu thread ran without one
+  // (glMapBufferRange returned null -> "buffer_ptr != nullptr" in
+  // OGLStagingTexture::Create, then a crash when the menu opened). At most one
+  // handed-over frame is pending; the call does not wait for it.
   static void PresentOverlayFrame();
+
+  // GPU thread, while emulation is paused: presents the frame PresentOverlayFrame
+  // handed over, if any. Called from FifoManager::RunGpuLoop. Video savestate
+  // work also runs on that thread (VideoBackendBase::DoState), so the two never
+  // overlap.
+  static void ServicePausedOverlayPresent();
+  // Drops a handed-over frame that was not presented. Called on resume.
+  static void DiscardPausedOverlayPresent();
 
   // Runs fn with the live presenter, or skips it if the presenter is gone.
   // Serializes against the Presenter destructor (which holds the same lock
@@ -182,6 +197,9 @@ private:
   // Presenter destructor, so a forced present can never touch a Presenter
   // that is being destroyed (unique_ptr::reset nulls the pointer first).
   static std::mutex s_forced_present_mutex;
+
+  // The overlay present itself, on the calling thread.
+  static void PresentOverlayFrameOnThisThread();
 
   // Backbuffer (window) size and render area
   int m_backbuffer_width = 0;
